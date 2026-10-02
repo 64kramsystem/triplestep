@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fs, path::Path};
+use std::{collections::BTreeMap, error::Error, fs, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,16 +25,30 @@ impl Default for Pattern {
     }
 }
 
-impl Pattern {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    pub selected: String,
+    pub presets: BTreeMap<String, Pattern>,
+}
+
+impl Settings {
     pub fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
-        let pattern: Self = serde_json::from_slice(&fs::read(path)?)?;
-        if !(1.0..=999.0).contains(&pattern.bpm) {
-            return Err("BPM must be between 1 and 999.".into());
+        let settings: Self = serde_json::from_slice(&fs::read(path)?)?;
+        if !settings.presets.contains_key(&settings.selected) {
+            return Err("The selected beat is missing.".into());
         }
-        if pattern.beats.is_empty() {
-            return Err("A pattern needs at least one beat.".into());
+        for (name, pattern) in &settings.presets {
+            if name.trim().is_empty() {
+                return Err("Saved beats need a name.".into());
+            }
+            if !(1.0..=999.0).contains(&pattern.bpm) {
+                return Err("BPM must be between 1 and 999.".into());
+            }
+            if pattern.beats.is_empty() {
+                return Err("A pattern needs at least one beat.".into());
+            }
         }
-        Ok(pattern)
+        Ok(settings)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn Error>> {
@@ -51,16 +65,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn saved_patterns_restore_tempo_and_every_toggle() {
+    fn saved_presets_restore_names_tempo_steps_and_sound() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("pattern.json");
-        let pattern = Pattern {
-            bpm: 137.5,
-            beats: vec![[true, false, true], [false; 3], [false, true, false]],
-            sound: Sound::Snare,
+        let path = dir.path().join("triplestep/config.json");
+        let settings = Settings {
+            selected: "Snare groove".into(),
+            presets: BTreeMap::from([
+                ("Clap".into(), Pattern::default()),
+                (
+                    "Snare groove".into(),
+                    Pattern {
+                        bpm: 137.5,
+                        beats: vec![[true, false, true], [false; 3], [false, true, false]],
+                        sound: Sound::Snare,
+                    },
+                ),
+            ]),
         };
-        pattern.save(&path).unwrap();
-        assert_eq!(Pattern::load(&path).unwrap(), pattern);
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap(), settings);
     }
 
     #[test]
@@ -68,7 +91,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pattern.json");
         for data in [
-            "not json",
             r#"{"bpm":0,"beats":[[true,false,false]],"sound":"clap"}"#,
             r#"{"bpm":1000,"beats":[[true,false,false]],"sound":"clap"}"#,
             r#"{"bpm":120,"beats":[],"sound":"clap"}"#,
@@ -76,8 +98,17 @@ mod tests {
             r#"{"bpm":120,"beats":[[true,1,false]],"sound":"clap"}"#,
             r#"{"bpm":120,"beats":[[true,false,false]],"sound":"unknown"}"#,
         ] {
+            let data = format!(r#"{{"selected":"Beat","presets":{{"Beat":{data}}}}}"#);
+            fs::write(&path, &data).unwrap();
+            assert!(Settings::load(&path).is_err(), "accepted {data}");
+        }
+        for data in [
+            "not json",
+            r#"{"selected":"Missing","presets":{}}"#,
+            r#"{"selected":" ","presets":{" ":{"bpm":120,"beats":[[true,false,false]],"sound":"clap"}}}"#,
+        ] {
             fs::write(&path, data).unwrap();
-            assert!(Pattern::load(&path).is_err(), "accepted {data}");
+            assert!(Settings::load(&path).is_err(), "accepted {data}");
         }
     }
 }
