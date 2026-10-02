@@ -3,7 +3,7 @@ mod pattern;
 
 use audio::Audio;
 use eframe::egui::{self, Color32, RichText, Stroke};
-use pattern::Pattern;
+use pattern::{Pattern, Sound};
 use std::time::Duration;
 
 fn main() -> eframe::Result {
@@ -63,10 +63,10 @@ impl TripleStep {
     }
 
     fn restart(&mut self) {
-        if let Some(audio) = &mut self.audio {
-            if audio.playing() {
-                audio.start(&self.pattern);
-            }
+        if let Some(audio) = &mut self.audio
+            && audio.playing()
+        {
+            audio.start(&self.pattern);
         }
     }
 
@@ -145,13 +145,20 @@ impl TripleStep {
                 self.commit_bpm();
             }
             let increase = ui.add_sized([44.0, 38.0], egui::Button::new(">")).clicked();
-            if decrease || increase {
-                if self.commit_bpm() {
-                    self.pattern.bpm =
-                        (self.pattern.bpm + if increase { 5.0 } else { -5.0 }).clamp(1.0, 999.0);
-                    self.bpm_text = self.pattern.bpm.to_string();
-                    self.restart();
-                }
+            if (decrease || increase) && self.commit_bpm() {
+                self.pattern.bpm =
+                    (self.pattern.bpm + if increase { 5.0 } else { -5.0 }).clamp(1.0, 999.0);
+                self.bpm_text = self.pattern.bpm.to_string();
+                self.restart();
+            }
+        });
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label("Sound");
+            let clap = ui.selectable_value(&mut self.pattern.sound, Sound::Clap, "TR-808 Clap");
+            let snare = ui.selectable_value(&mut self.pattern.sound, Sound::Snare, "TR-707 Snare");
+            if clap.changed() || snare.changed() {
+                self.restart();
             }
         });
         ui.add_space(10.0);
@@ -292,6 +299,9 @@ mod tests {
     fn beat_controls_toggle_insert_remove_and_reset() {
         let mut harness = harness();
         assert_eq!(harness.state().pattern, Pattern::default());
+        harness.get_by_label("TR-707 Snare").click();
+        harness.run();
+        assert_eq!(harness.state().pattern.sound, Sound::Snare);
         harness.get_by_label("Beat 1, step 2").click();
         harness.run();
         assert_eq!(harness.state().pattern.beats, vec![[true, true, false]]);
@@ -323,16 +333,20 @@ mod tests {
         harness.get_by_label("<").click();
         harness.run();
         assert_eq!(harness.state().pattern.bpm, 120.0);
-        harness.get_by_label("BPM").click();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, "BPM")
+            .click();
         harness.run();
-        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::A);
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         harness.event(egui::Event::Text("137.5".into()));
         harness.key_press(egui::Key::Enter);
         harness.run();
         assert_eq!(harness.state().pattern.bpm, 137.5);
-        harness.get_by_label("BPM").click();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, "BPM")
+            .click();
         harness.run();
-        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::A);
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         harness.event(egui::Event::Text("0".into()));
         harness.key_press(egui::Key::Enter);
         harness.run();
