@@ -14,8 +14,10 @@ pub struct Audio {
 
 impl Audio {
     pub fn new() -> Result<Self, Box<dyn Error>> {
+        let mut device = DeviceSinkBuilder::open_default_sink()?;
+        device.log_on_drop(false);
         Ok(Self {
-            device: DeviceSinkBuilder::open_default_sink()?,
+            device,
             player: None,
         })
     }
