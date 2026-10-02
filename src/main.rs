@@ -4,20 +4,61 @@ mod pattern;
 use audio::Audio;
 use eframe::egui::{self, Color32, RichText, Stroke};
 use pattern::{Pattern, Sound};
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
+
+const BACKGROUND: Color32 = Color32::from_rgb(14, 17, 22);
+const PANEL: Color32 = Color32::from_rgb(21, 26, 33);
+const PAD: Color32 = Color32::from_rgb(33, 40, 49);
+const BORDER: Color32 = Color32::from_rgb(49, 59, 71);
+const MUTED: Color32 = Color32::from_rgb(141, 155, 172);
+const ACCENT: Color32 = Color32::from_rgb(192, 239, 103);
+const PLAYHEAD: Color32 = Color32::from_rgb(255, 189, 105);
+const ROW_HEIGHT: f32 = 36.0;
+
+fn configure_style(ctx: &egui::Context) {
+    let mut style = egui::Style::default();
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.visuals = egui::Visuals::dark();
+    style.visuals.panel_fill = BACKGROUND;
+    style.visuals.extreme_bg_color = BACKGROUND;
+    style.visuals.weak_text_color = Some(MUTED);
+    style.visuals.selection.bg_fill = ACCENT;
+    style.visuals.selection.stroke = Stroke::new(1.0, BACKGROUND);
+    for widget in [
+        &mut style.visuals.widgets.inactive,
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+    ] {
+        widget.corner_radius = egui::CornerRadius::same(7);
+        widget.bg_stroke = Stroke::new(1.0, BORDER);
+    }
+    style.visuals.widgets.inactive.bg_fill = PAD;
+    style.visuals.widgets.inactive.weak_bg_fill = PAD;
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(49, 60, 72);
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(49, 60, 72);
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, MUTED);
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.set_global_style(style);
+}
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TripleStep")
-            .with_inner_size([460.0, 420.0])
-            .with_min_inner_size([400.0, 300.0]),
+            .with_inner_size([500.0, 740.0])
+            .with_min_inner_size([440.0, 480.0]),
         ..Default::default()
     };
     eframe::run_native(
         "TripleStep",
         options,
-        Box::new(|_| Ok(Box::new(TripleStep::default()))),
+        Box::new(|cc| {
+            configure_style(&cc.egui_ctx);
+            Ok(Box::new(TripleStep::new(
+                dirs::config_dir().map(|dir| dir.join("triplestep/config.json")),
+            )))
+        }),
     )
 }
 
@@ -26,6 +67,7 @@ struct TripleStep {
     bpm_text: String,
     audio: Option<Audio>,
     message: String,
+    config_path: Option<PathBuf>,
 }
 
 impl Default for TripleStep {
@@ -35,11 +77,23 @@ impl Default for TripleStep {
             bpm_text: "120".into(),
             audio: None,
             message: String::new(),
+            config_path: None,
         }
     }
 }
 
 impl TripleStep {
+    fn new(config_path: Option<PathBuf>) -> Self {
+        let mut app = Self {
+            config_path,
+            ..Self::default()
+        };
+        if app.config_path.as_ref().is_some_and(|path| path.exists()) {
+            app.load();
+        }
+        app
+    }
+
     fn playing(&self) -> bool {
         self.audio.as_ref().is_some_and(Audio::playing)
     }
@@ -96,46 +150,61 @@ impl TripleStep {
         if !self.commit_bpm() {
             return;
         }
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Save TripleStep pattern")
-            .add_filter("TripleStep pattern", &["json"])
-            .set_file_name("triplestep.json")
-            .save_file()
-        {
-            self.message = match self.pattern.save(&path) {
-                Ok(()) => "Pattern saved.".into(),
-                Err(error) => format!("Cannot save pattern: {error}"),
-            };
-        }
+        let Some(path) = &self.config_path else {
+            self.message = "Cannot locate the configuration folder.".into();
+            return;
+        };
+        self.message = match self.pattern.save(path) {
+            Ok(()) => "Settings saved.".into(),
+            Err(error) => format!("Cannot save settings: {error}"),
+        };
     }
 
     fn load(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Load TripleStep pattern")
-            .add_filter("TripleStep pattern", &["json"])
-            .pick_file()
-        {
-            match Pattern::load(&path) {
-                Ok(pattern) => {
-                    self.stop();
-                    self.bpm_text = pattern.bpm.to_string();
-                    self.pattern = pattern;
-                    self.message = "Pattern loaded.".into();
-                }
-                Err(error) => self.message = format!("Cannot load pattern: {error}"),
+        let Some(path) = &self.config_path else {
+            self.message = "Cannot locate the configuration folder.".into();
+            return;
+        };
+        match Pattern::load(path) {
+            Ok(pattern) => {
+                self.stop();
+                self.bpm_text = pattern.bpm.to_string();
+                self.pattern = pattern;
+                self.message = "Settings loaded.".into();
             }
+            Err(error) => self.message = format!("Cannot load settings: {error}"),
         }
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.heading("BPM");
+        let playing = self.playing();
         ui.horizontal(|ui| {
-            let decrease = ui.add_sized([44.0, 38.0], egui::Button::new("<")).clicked();
+            ui.label(RichText::new("TripleStep").size(24.0).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(if playing { "PLAYING" } else { "READY" })
+                        .size(11.0)
+                        .color(if playing { ACCENT } else { MUTED }),
+                );
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                ui.painter().circle_filled(
+                    rect.center(),
+                    3.0,
+                    if playing { ACCENT } else { MUTED },
+                );
+            });
+        });
+        ui.add_space(18.0);
+        ui.label(RichText::new("TEMPO / BPM").size(11.0).color(MUTED));
+        ui.horizontal(|ui| {
+            let decrease = ui.add_sized([36.0, 54.0], egui::Button::new("<")).clicked();
             let response = ui.add_sized(
-                [100.0, 38.0],
+                [112.0, 54.0],
                 egui::TextEdit::singleline(&mut self.bpm_text)
-                    .font(egui::TextStyle::Heading)
-                    .horizontal_align(egui::Align::Center),
+                    .font(egui::FontId::monospace(30.0))
+                    .text_color(ACCENT)
+                    .horizontal_align(egui::Align::Center)
+                    .vertical_align(egui::Align::Center),
             );
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "BPM"));
@@ -144,42 +213,56 @@ impl TripleStep {
             {
                 self.commit_bpm();
             }
-            let increase = ui.add_sized([44.0, 38.0], egui::Button::new(">")).clicked();
+            let increase = ui.add_sized([36.0, 54.0], egui::Button::new(">")).clicked();
             if (decrease || increase) && self.commit_bpm() {
                 self.pattern.bpm =
                     (self.pattern.bpm + if increase { 5.0 } else { -5.0 }).clamp(1.0, 999.0);
                 self.bpm_text = self.pattern.bpm.to_string();
                 self.restart();
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_sized(
+                        [112.0, 54.0],
+                        egui::Button::new(
+                            RichText::new(if playing { "Stop" } else { "Start" })
+                                .size(17.0)
+                                .strong()
+                                .color(BACKGROUND),
+                        )
+                        .fill(if playing { PLAYHEAD } else { ACCENT })
+                        .stroke(Stroke::NONE),
+                    )
+                    .clicked()
+                {
+                    if playing {
+                        self.stop();
+                    } else {
+                        self.start();
+                    }
+                }
+            });
         });
-        ui.add_space(10.0);
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
-            ui.label("Sound");
+            ui.label(RichText::new("SOUND").size(11.0).color(MUTED));
             let clap = ui.selectable_value(&mut self.pattern.sound, Sound::Clap, "TR-808 Clap");
             let snare = ui.selectable_value(&mut self.pattern.sound, Sound::Snare, "TR-707 Snare");
             if clap.changed() || snare.changed() {
                 self.restart();
             }
         });
-        ui.add_space(10.0);
+        ui.add_space(16.0);
         ui.horizontal(|ui| {
-            if ui
-                .add_sized(
-                    [100.0, 32.0],
-                    egui::Button::new(if self.playing() { "Stop" } else { "Start" }),
-                )
-                .clicked()
-            {
-                if self.playing() {
-                    self.stop();
-                } else {
-                    self.start();
-                }
-            }
-            ui.weak("Three equal steps per beat.");
+            ui.label(RichText::new("PATTERN").size(11.0).color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{} beats / 3 steps", self.pattern.beats.len()))
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
         });
-        ui.add_space(10.0);
-        ui.separator();
 
         let current_step = self
             .audio
@@ -189,54 +272,108 @@ impl TripleStep {
         let mut insert = None;
         let mut remove = None;
         let beat_count = self.pattern.beats.len();
-        egui::ScrollArea::vertical()
-            .max_height((ui.available_height() - 85.0).max(50.0))
+        let eight_rows_height = 8.0 * (ROW_HEIGHT + ui.spacing().item_spacing.y);
+        egui::Frame::new()
+            .fill(PANEL)
+            .stroke(Stroke::new(1.0, BORDER))
+            .corner_radius(12)
+            .inner_margin(12)
             .show(ui, |ui| {
-                for (row, beat) in self.pattern.beats.iter_mut().enumerate() {
-                    ui.push_id(row, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add_sized([46.0, 40.0], egui::Label::new(format!("{:02}", row + 1)));
-                            for (third, enabled) in beat.iter_mut().enumerate() {
-                                let active = current_step == Some(row * 3 + third);
-                                let mut button = egui::Button::new(
-                                    RichText::new((third + 1).to_string()).size(18.0),
-                                )
-                                .selected(*enabled);
-                                if active {
-                                    button = button
-                                        .stroke(Stroke::new(2.0, Color32::from_rgb(235, 160, 45)));
-                                }
-                                let response = ui.add_sized([64.0, 40.0], button);
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::selected(
-                                        egui::WidgetType::SelectableLabel,
-                                        true,
-                                        *enabled,
-                                        format!("Beat {}, step {}", row + 1, third + 1),
-                                    )
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .max_height(eight_rows_height.min((ui.available_height() - 100.0).max(50.0)))
+                    .show(ui, |ui| {
+                        let pad_width = (ui.available_width() - 32.0 - 56.0 - 5.0 * 8.0) / 3.0;
+                        for (row, beat) in self.pattern.beats.iter_mut().enumerate() {
+                            ui.push_id(row, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized(
+                                        [32.0, ROW_HEIGHT],
+                                        egui::Label::new(
+                                            RichText::new(format!("{:02}", row + 1))
+                                                .monospace()
+                                                .color(
+                                                    if current_step
+                                                        .is_some_and(|step| step / 3 == row)
+                                                    {
+                                                        PLAYHEAD
+                                                    } else {
+                                                        MUTED
+                                                    },
+                                                ),
+                                        ),
+                                    );
+                                    for (third, enabled) in beat.iter_mut().enumerate() {
+                                        let active = current_step == Some(row * 3 + third);
+                                        let button = egui::Button::new(
+                                            RichText::new((third + 1).to_string())
+                                                .size(16.0)
+                                                .strong()
+                                                .color(if active || *enabled {
+                                                    BACKGROUND
+                                                } else {
+                                                    MUTED
+                                                }),
+                                        )
+                                        .fill(if active {
+                                            PLAYHEAD
+                                        } else if *enabled {
+                                            ACCENT
+                                        } else {
+                                            PAD
+                                        })
+                                        .stroke(Stroke::new(
+                                            1.0,
+                                            if active {
+                                                PLAYHEAD
+                                            } else if *enabled {
+                                                ACCENT
+                                            } else {
+                                                BORDER
+                                            },
+                                        ));
+                                        let response =
+                                            ui.add_sized([pad_width, ROW_HEIGHT], button);
+                                        response.widget_info(|| {
+                                            egui::WidgetInfo::selected(
+                                                egui::WidgetType::SelectableLabel,
+                                                true,
+                                                *enabled,
+                                                format!("Beat {}, step {}", row + 1, third + 1),
+                                            )
+                                        });
+                                        if response.clicked() {
+                                            *enabled = !*enabled;
+                                            changed = true;
+                                        }
+                                    }
+                                    if ui
+                                        .add_sized(
+                                            [28.0, ROW_HEIGHT],
+                                            egui::Button::new("+").frame(false),
+                                        )
+                                        .on_hover_text("Add an empty beat below")
+                                        .clicked()
+                                    {
+                                        insert = Some(row + 1);
+                                    }
+                                    if ui
+                                        .add_enabled_ui(beat_count > 1, |ui| {
+                                            ui.add_sized(
+                                                [28.0, ROW_HEIGHT],
+                                                egui::Button::new("−").frame(false),
+                                            )
+                                        })
+                                        .inner
+                                        .on_hover_text("Remove this beat")
+                                        .clicked()
+                                    {
+                                        remove = Some(row);
+                                    }
                                 });
-                                if response.clicked() {
-                                    *enabled = !*enabled;
-                                    changed = true;
-                                }
-                            }
-                            if ui
-                                .button("+")
-                                .on_hover_text("Add an empty beat below")
-                                .clicked()
-                            {
-                                insert = Some(row + 1);
-                            }
-                            if ui
-                                .add_enabled(beat_count > 1, egui::Button::new("−"))
-                                .on_hover_text("Remove this beat")
-                                .clicked()
-                            {
-                                remove = Some(row);
-                            }
-                        });
+                            });
+                        }
                     });
-                }
             });
         if let Some(row) = insert {
             self.pattern.beats.insert(row, [false; 3]);
@@ -249,23 +386,37 @@ impl TripleStep {
         if changed {
             self.restart();
         }
-        ui.add_space(10.0);
-        ui.separator();
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if ui.button("Load…").clicked() {
+            if ui
+                .button("Load")
+                .on_hover_text("Restore saved settings")
+                .clicked()
+            {
                 self.load();
             }
-            if ui.button("Save…").clicked() {
+            if ui
+                .button("Save")
+                .on_hover_text("Save tempo, steps, and sound")
+                .clicked()
+            {
                 self.save();
             }
-            if ui.button("Reset").clicked() {
-                self.stop();
-                self.pattern = Pattern::default();
-                self.bpm_text = self.pattern.bpm.to_string();
-                self.message.clear();
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Reset").clicked() {
+                    self.stop();
+                    self.pattern = Pattern::default();
+                    self.bpm_text = self.pattern.bpm.to_string();
+                    self.message.clear();
+                }
+            });
         });
-        ui.weak("Edits restart the loop.");
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Three equal steps per beat. Edits restart the loop.")
+                .size(11.0)
+                .color(MUTED),
+        );
         if !self.message.is_empty() {
             ui.label(&self.message);
         }
@@ -277,7 +428,9 @@ impl TripleStep {
 
 impl eframe::App for TripleStep {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| self.controls(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
+            .show(ui, |ui| self.controls(ui));
     }
 }
 
@@ -287,12 +440,15 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     fn harness() -> Harness<'static, TripleStep> {
-        Harness::builder()
-            .with_size(egui::vec2(460.0, 420.0))
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 740.0))
             .build_ui_state(
                 |ui, app: &mut TripleStep| app.controls(ui),
                 TripleStep::default(),
-            )
+            );
+        configure_style(&harness.ctx);
+        harness.run();
+        harness
     }
 
     #[test]
@@ -304,24 +460,103 @@ mod tests {
         assert_eq!(harness.state().pattern.sound, Sound::Snare);
         harness.get_by_label("Beat 1, step 2").click();
         harness.run();
-        assert_eq!(harness.state().pattern.beats, vec![[true, true, false]]);
-        harness.get_by_label("+").click();
+        assert_eq!(
+            harness.state().pattern.beats,
+            vec![
+                [true, true, false],
+                [true, false, false],
+                [true, false, false],
+                [true, false, false]
+            ]
+        );
+        harness.get_all_by_label("+").next().unwrap().click();
         harness.run();
         assert_eq!(
             harness.state().pattern.beats,
-            vec![[true, true, false], [false; 3]]
+            vec![
+                [true, true, false],
+                [false; 3],
+                [true, false, false],
+                [true, false, false],
+                [true, false, false]
+            ]
         );
         harness.get_by_label("Beat 2, step 3").click();
         harness.run();
         harness.get_all_by_label("−").next().unwrap().click();
         harness.run();
-        assert_eq!(harness.state().pattern.beats, vec![[false, false, true]]);
+        assert_eq!(
+            harness.state().pattern.beats,
+            vec![
+                [false, false, true],
+                [true, false, false],
+                [true, false, false],
+                [true, false, false]
+            ]
+        );
+        while harness.state().pattern.beats.len() > 1 {
+            harness.get_all_by_label("−").last().unwrap().click();
+            harness.run();
+        }
         harness.get_by_label("−").click();
         harness.run();
         assert_eq!(harness.state().pattern.beats.len(), 1);
         harness.get_by_label("Reset").click();
         harness.run();
         assert_eq!(harness.state().pattern, Pattern::default());
+    }
+
+    #[test]
+    fn save_and_load_restore_all_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("triplestep/config.json");
+        let mut harness = harness();
+        harness.state_mut().config_path = Some(path.clone());
+        harness.get_by_label(">").click();
+        harness.run();
+        harness.get_by_label("TR-707 Snare").click();
+        harness.run();
+        harness.get_by_label("Beat 1, step 3").click();
+        harness.run();
+        harness.get_all_by_label("+").last().unwrap().click();
+        harness.run();
+        let expected = harness.state().pattern.clone();
+        harness.get_by_label("Save").click();
+        harness.run();
+        assert_eq!(Pattern::load(&path).unwrap(), expected);
+        assert_eq!(TripleStep::new(Some(path.clone())).pattern, expected);
+        harness.get_by_label("Reset").click();
+        harness.run();
+        assert_eq!(harness.state().pattern, Pattern::default());
+        assert_eq!(Pattern::load(&path).unwrap(), expected);
+        harness.get_by_label("Load").click();
+        harness.run();
+        assert_eq!(harness.state().pattern, expected);
+        assert_eq!(harness.state().bpm_text, "125");
+        harness.state_mut().bpm_text = "0".into();
+        harness.get_by_label("Save").click();
+        harness.run();
+        assert_eq!(Pattern::load(&path).unwrap(), expected);
+        std::fs::write(&path, "invalid json").unwrap();
+        harness.get_by_label("Load").click();
+        harness.run();
+        assert_eq!(harness.state().pattern, expected);
+        assert!(harness.state().message.starts_with("Cannot load settings:"));
+    }
+
+    #[test]
+    fn eight_rows_can_be_edited_without_scrolling() {
+        let mut harness = harness();
+        for _ in 0..4 {
+            harness.get_all_by_label("+").last().unwrap().click();
+            harness.run();
+        }
+        harness.get_by_label("Beat 8, step 3").click();
+        harness.run();
+        assert_eq!(harness.state().pattern.beats[7], [false, false, true]);
+        harness.get_by_label("Beat 1, step 3").click();
+        harness.run();
+        assert_eq!(harness.state().pattern.beats[0], [true, false, true]);
     }
 
     #[test]

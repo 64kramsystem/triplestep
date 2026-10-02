@@ -19,7 +19,7 @@ impl Default for Pattern {
     fn default() -> Self {
         Self {
             bpm: 120.0,
-            beats: vec![[true, false, false]],
+            beats: vec![[true, false, false]; 4],
             sound: Sound::Clap,
         }
     }
@@ -38,6 +38,9 @@ impl Pattern {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn Error>> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(path, serde_json::to_vec_pretty(self)?)?;
         Ok(())
     }
