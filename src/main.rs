@@ -69,6 +69,7 @@ struct TripleStep {
     message: String,
     config_path: Option<PathBuf>,
     preset_name: String,
+    current_preset: Option<String>,
     presets: BTreeMap<String, Pattern>,
     show_load: bool,
 }
@@ -82,6 +83,7 @@ impl Default for TripleStep {
             message: String::new(),
             config_path: None,
             preset_name: "My beat".into(),
+            current_preset: None,
             presets: BTreeMap::new(),
             show_load: false,
         }
@@ -100,7 +102,9 @@ impl TripleStep {
             match Settings::load(path) {
                 Ok(settings) => {
                     app.presets = settings.presets;
-                    app.load(&settings.selected);
+                    if let Some(name) = settings.selected {
+                        app.load(&name);
+                    }
                 }
                 Err(error) => app.message = format!("Cannot load settings: {error}"),
             }
@@ -164,28 +168,38 @@ impl TripleStep {
         if !self.commit_bpm() {
             return;
         }
-        let name = self.preset_name.trim();
+        let name = self.preset_name.trim().to_owned();
         if name.is_empty() {
             self.message = "Enter a name for this beat before saving.".into();
             return;
         }
-        let Some(path) = &self.config_path else {
-            self.message = "Cannot locate the configuration folder.".into();
-            return;
-        };
         let mut settings = Settings {
-            selected: name.into(),
+            selected: Some(name.clone()),
             presets: self.presets.clone(),
         };
-        settings.presets.insert(name.into(), self.pattern.clone());
-        self.message = match settings.save(path) {
-            Ok(()) => {
-                self.preset_name = settings.selected;
-                self.presets = settings.presets;
-                format!("Saved \"{}\".", self.preset_name)
-            }
-            Err(error) => format!("Cannot save settings: {error}"),
+        settings.presets.insert(name.clone(), self.pattern.clone());
+        if self.save_settings(settings) {
+            self.preset_name = name;
+            self.message = format!("Saved \"{}\".", self.preset_name);
+        }
+    }
+
+    fn save_settings(&mut self, settings: Settings) -> bool {
+        let Some(path) = &self.config_path else {
+            self.message = "Cannot locate the configuration folder.".into();
+            return false;
         };
+        match settings.save(path) {
+            Ok(()) => {
+                self.current_preset = settings.selected;
+                self.presets = settings.presets;
+                true
+            }
+            Err(error) => {
+                self.message = format!("Cannot save settings: {error}");
+                false
+            }
+        }
     }
 
     fn load(&mut self, name: &str) {
@@ -194,11 +208,40 @@ impl TripleStep {
         self.bpm_text = pattern.bpm.to_string();
         self.pattern = pattern;
         self.preset_name = name.into();
+        self.current_preset = Some(name.into());
         self.message = format!("Loaded \"{name}\".");
+    }
+
+    fn reset(&mut self) {
+        self.stop();
+        self.pattern = Pattern::default();
+        self.bpm_text = self.pattern.bpm.to_string();
+        self.preset_name = "My beat".into();
+        self.current_preset = None;
+        self.message.clear();
+    }
+
+    fn delete(&mut self, name: &str) {
+        let current = self.current_preset.as_deref() == Some(name);
+        let mut settings = Settings {
+            selected: self
+                .current_preset
+                .clone()
+                .filter(|selected| selected != name),
+            presets: self.presets.clone(),
+        };
+        settings.presets.remove(name);
+        if self.save_settings(settings) {
+            if current {
+                self.reset();
+            }
+            self.message = format!("Deleted \"{name}\".");
+        }
     }
 
     fn load_popup(&mut self, ctx: &egui::Context) {
         let mut selected = None;
+        let mut deleted = None;
         let modal = egui::Modal::new(egui::Id::new("load_beat"))
             .frame(
                 egui::Frame::new()
@@ -219,16 +262,50 @@ impl TripleStep {
                         .max_height(240.0)
                         .show(ui, |ui| {
                             for name in self.presets.keys() {
-                                if ui
-                                    .add_sized(
-                                        [ui.available_width(), 32.0],
-                                        egui::Button::new(name),
-                                    )
-                                    .clicked()
-                                {
-                                    selected = Some(name.clone());
-                                    ui.close();
-                                }
+                                ui.push_id(name, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_sized(
+                                                [ui.available_width() - 36.0, 32.0],
+                                                egui::Button::new(name),
+                                            )
+                                            .clicked()
+                                        {
+                                            selected = Some(name.clone());
+                                            ui.close();
+                                        }
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(28.0, 28.0),
+                                            egui::Sense::click(),
+                                        );
+                                        response.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::WidgetType::Button,
+                                                true,
+                                                format!("Delete {name}"),
+                                            )
+                                        });
+                                        let color = if response.hovered() {
+                                            Color32::from_rgb(245, 89, 96)
+                                        } else {
+                                            Color32::from_rgb(208, 57, 66)
+                                        };
+                                        ui.painter().circle_filled(rect.center(), 11.0, color);
+                                        ui.painter().line_segment(
+                                            [
+                                                rect.center() - egui::vec2(5.0, 0.0),
+                                                rect.center() + egui::vec2(5.0, 0.0),
+                                            ],
+                                            Stroke::new(2.0, Color32::WHITE),
+                                        );
+                                        if response
+                                            .on_hover_text(format!("Delete {name}"))
+                                            .clicked()
+                                        {
+                                            deleted = Some(name.clone());
+                                        }
+                                    })
+                                });
                             }
                         });
                 }
@@ -242,6 +319,9 @@ impl TripleStep {
         }
         if let Some(name) = selected {
             self.load(&name);
+        }
+        if let Some(name) = deleted {
+            self.delete(&name);
         }
     }
 
@@ -481,11 +561,7 @@ impl TripleStep {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Reset").clicked() {
-                    self.stop();
-                    self.pattern = Pattern::default();
-                    self.bpm_text = self.pattern.bpm.to_string();
-                    self.preset_name = "My beat".into();
-                    self.message.clear();
+                    self.reset();
                 }
             });
         });
@@ -673,6 +749,59 @@ mod tests {
         harness.event(egui::Event::Text(name.into()));
         harness.key_press(egui::Key::Enter);
         harness.run();
+    }
+
+    #[test]
+    fn deleting_beats_preserves_other_edits_and_resets_the_current_beat() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut harness = harness();
+        harness.state_mut().config_path = Some(path.clone());
+        for name in ["First", "Second", "Third"] {
+            type_beat_name(&mut harness, name);
+            harness.get_by_label(">").click();
+            harness.run();
+            harness.get_by_label("Save").click();
+            harness.run();
+        }
+        let saved = Settings::load(&path).unwrap();
+        type_beat_name(&mut harness, "New draft");
+        harness.get_by_label(">").click();
+        harness.run();
+        let draft = harness.state().pattern.clone();
+        harness.get_by_label("Load").click();
+        harness.run();
+        harness.get_by_label("Delete First").click();
+        harness.run();
+        assert_eq!(harness.state().pattern, draft);
+        assert_eq!(harness.state().preset_name, "New draft");
+        let remaining = Settings::load(&path).unwrap();
+        assert_eq!(remaining.presets.len(), 2);
+        assert_eq!(remaining.presets["Third"], saved.presets["Third"]);
+        assert_eq!(remaining.selected.as_deref(), Some("Third"));
+        harness.get_by_label("Delete Third").click();
+        harness.run();
+        assert_eq!(harness.state().pattern, Pattern::default());
+        assert_eq!(harness.state().bpm_text, "120");
+        assert_eq!(harness.state().preset_name, "My beat");
+        assert_eq!(harness.state().current_preset, None);
+        let remaining = Settings::load(&path).unwrap();
+        assert_eq!(
+            remaining.presets,
+            BTreeMap::from([("Second".into(), saved.presets["Second"].clone())])
+        );
+        assert_eq!(remaining.selected, None);
+        assert_eq!(
+            TripleStep::new(Some(path.clone())).pattern,
+            Pattern::default()
+        );
+        harness.get_by_label("Delete Second").click();
+        harness.run();
+        harness.get_by_label("No saved beats yet.");
+        let reopened = TripleStep::new(Some(path));
+        assert!(reopened.presets.is_empty());
+        assert!(reopened.message.is_empty());
+        assert_eq!(reopened.pattern, Pattern::default());
     }
 
     #[test]

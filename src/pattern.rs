@@ -27,14 +27,18 @@ impl Default for Pattern {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    pub selected: String,
+    pub selected: Option<String>,
     pub presets: BTreeMap<String, Pattern>,
 }
 
 impl Settings {
     pub fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
         let settings: Self = serde_json::from_slice(&fs::read(path)?)?;
-        if !settings.presets.contains_key(&settings.selected) {
+        if settings
+            .selected
+            .as_ref()
+            .is_some_and(|name| !settings.presets.contains_key(name))
+        {
             return Err("The selected beat is missing.".into());
         }
         for (name, pattern) in &settings.presets {
@@ -69,7 +73,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("triplestep/config.json");
         let settings = Settings {
-            selected: "Snare groove".into(),
+            selected: Some("Snare groove".into()),
             presets: BTreeMap::from([
                 ("Clap".into(), Pattern::default()),
                 (
