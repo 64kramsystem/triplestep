@@ -348,9 +348,13 @@ impl TripleStep {
         ui.add_space(18.0);
         ui.label(RichText::new("TEMPO / BPM").size(11.0).color(MUTED));
         ui.horizontal(|ui| {
-            let decrease = ui.add_sized([36.0, 54.0], egui::Button::new("<")).clicked();
+            let decrease_ten = ui
+                .add_sized([32.0, 54.0], egui::Button::new("«"))
+                .on_hover_text("Decrease by 10 BPM")
+                .clicked();
+            let decrease = ui.add_sized([32.0, 54.0], egui::Button::new("<")).clicked();
             let response = ui.add_sized(
-                [112.0, 54.0],
+                [96.0, 54.0],
                 egui::TextEdit::singleline(&mut self.bpm_text)
                     .font(egui::FontId::monospace(30.0))
                     .text_color(ACCENT)
@@ -364,17 +368,31 @@ impl TripleStep {
             {
                 self.commit_bpm();
             }
-            let increase = ui.add_sized([36.0, 54.0], egui::Button::new(">")).clicked();
-            if (decrease || increase) && self.commit_bpm() {
-                self.pattern.bpm =
-                    (self.pattern.bpm + if increase { 5.0 } else { -5.0 }).clamp(1.0, 999.0);
+            let increase = ui.add_sized([32.0, 54.0], egui::Button::new(">")).clicked();
+            let increase_ten = ui
+                .add_sized([32.0, 54.0], egui::Button::new("»"))
+                .on_hover_text("Increase by 10 BPM")
+                .clicked();
+            let delta = if decrease_ten {
+                -10.0
+            } else if increase_ten {
+                10.0
+            } else if decrease {
+                -5.0
+            } else if increase {
+                5.0
+            } else {
+                0.0
+            };
+            if delta != 0.0 && self.commit_bpm() {
+                self.pattern.bpm = (self.pattern.bpm + delta).clamp(1.0, 999.0);
                 self.bpm_text = self.pattern.bpm.to_string();
                 self.restart();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_sized(
-                        [112.0, 54.0],
+                        [96.0, 54.0],
                         egui::Button::new(
                             RichText::new(if playing { "Stop" } else { "Start" })
                                 .size(17.0)
