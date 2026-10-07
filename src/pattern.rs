@@ -11,16 +11,16 @@ pub enum Sound {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pattern {
     pub bpm: f64,
-    pub beats: Vec<[bool; 3]>,
-    pub sound: Sound,
+    pub beats: Vec<[Option<Sound>; 3]>,
+    pub default_sound: Sound,
 }
 
 impl Default for Pattern {
     fn default() -> Self {
         Self {
             bpm: 120.0,
-            beats: vec![[true, false, false]; 4],
-            sound: Sound::Clap,
+            beats: vec![[Some(Sound::Clap), None, None]; 4],
+            default_sound: Sound::Clap,
         }
     }
 }
@@ -80,8 +80,12 @@ mod tests {
                     "Snare groove".into(),
                     Pattern {
                         bpm: 137.5,
-                        beats: vec![[true, false, true], [false; 3], [false, true, false]],
-                        sound: Sound::Snare,
+                        beats: vec![
+                            [Some(Sound::Clap), None, Some(Sound::Snare)],
+                            [None; 3],
+                            [None, Some(Sound::Snare), None],
+                        ],
+                        default_sound: Sound::Snare,
                     },
                 ),
             ]),
@@ -95,12 +99,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pattern.json");
         for data in [
-            r#"{"bpm":0,"beats":[[true,false,false]],"sound":"clap"}"#,
-            r#"{"bpm":1000,"beats":[[true,false,false]],"sound":"clap"}"#,
-            r#"{"bpm":120,"beats":[],"sound":"clap"}"#,
-            r#"{"bpm":120,"beats":[[true,false]],"sound":"clap"}"#,
-            r#"{"bpm":120,"beats":[[true,1,false]],"sound":"clap"}"#,
-            r#"{"bpm":120,"beats":[[true,false,false]],"sound":"unknown"}"#,
+            r#"{"bpm":0,"beats":[["clap",null,null]],"default_sound":"clap"}"#,
+            r#"{"bpm":1000,"beats":[["clap",null,null]],"default_sound":"clap"}"#,
+            r#"{"bpm":120,"beats":[],"default_sound":"clap"}"#,
+            r#"{"bpm":120,"beats":[["clap",null]],"default_sound":"clap"}"#,
+            r#"{"bpm":120,"beats":[["clap",1,null]],"default_sound":"clap"}"#,
+            r#"{"bpm":120,"beats":[["unknown",null,null]],"default_sound":"clap"}"#,
+            r#"{"bpm":120,"beats":[["clap",null,null]],"default_sound":"unknown"}"#,
         ] {
             let data = format!(r#"{{"selected":"Beat","presets":{{"Beat":{data}}}}}"#);
             fs::write(&path, &data).unwrap();
@@ -109,7 +114,7 @@ mod tests {
         for data in [
             "not json",
             r#"{"selected":"Missing","presets":{}}"#,
-            r#"{"selected":" ","presets":{" ":{"bpm":120,"beats":[[true,false,false]],"sound":"clap"}}}"#,
+            r#"{"selected":" ","presets":{" ":{"bpm":120,"beats":[["clap",null,null]],"default_sound":"clap"}}}"#,
         ] {
             fs::write(&path, data).unwrap();
             assert!(Settings::load(&path).is_err(), "accepted {data}");

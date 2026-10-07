@@ -47,9 +47,9 @@ impl Audio {
 
 // Generate steps on the audio thread, so GUI redraws cannot disturb the rhythm.
 struct BeatSource {
-    steps: Vec<bool>,
-    sample: Vec<f32>,
-    voices: Vec<usize>,
+    steps: Vec<Option<Sound>>,
+    samples: [Vec<f32>; 2],
+    voices: Vec<(Sound, usize)>,
     sample_rate: NonZeroU32,
     samples_per_step: f64,
     step: usize,
@@ -58,19 +58,25 @@ struct BeatSource {
 
 impl BeatSource {
     fn new(pattern: &Pattern) -> Self {
-        let bytes: &[u8] = match pattern.sound {
-            Sound::Clap => include_bytes!("../assets/tr808-clap.wav"),
-            Sound::Snare => include_bytes!("../assets/tr707-snare.wav"),
-        };
-        let decoder =
-            Decoder::try_from(Cursor::new(bytes)).expect("bundled drum sample must be valid");
-        let sample_rate = decoder.sample_rate();
-        let sample: Vec<_> = decoder.amplify(0.4).collect();
+        let samples = [
+            include_bytes!("../assets/tr808-clap.wav").as_slice(),
+            include_bytes!("../assets/tr707-snare.wav").as_slice(),
+        ]
+        .map(|bytes| {
+            let decoder =
+                Decoder::try_from(Cursor::new(bytes)).expect("bundled drum sample must be valid");
+            assert_eq!(decoder.sample_rate().get(), 48_000);
+            assert_eq!(decoder.channels().get(), 1);
+            decoder.amplify(0.4).collect::<Vec<_>>()
+        });
+        let sample_rate = NonZeroU32::new(48_000).unwrap();
         let samples_per_step = f64::from(sample_rate.get()) * 20.0 / pattern.bpm;
-        let voices = Vec::with_capacity((sample.len() as f64 / samples_per_step).ceil() as usize);
+        let voices = Vec::with_capacity(
+            (samples.iter().map(Vec::len).max().unwrap() as f64 / samples_per_step).ceil() as usize,
+        );
         Self {
             steps: pattern.beats.iter().flatten().copied().collect(),
-            sample,
+            samples,
             voices,
             sample_rate,
             samples_per_step,
@@ -84,20 +90,23 @@ impl Iterator for BeatSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.phase < 1.0 && self.steps[self.step] {
-            self.voices.push(0);
+        if self.phase < 1.0
+            && let Some(sound) = self.steps[self.step]
+        {
+            self.voices.push((sound, 0));
         }
         // Let earlier hits finish even when the next step has started.
         let sample = self
             .voices
             .iter_mut()
-            .map(|position| {
-                let sample = self.sample[*position];
+            .map(|(sound, position)| {
+                let sample = self.samples[*sound as usize][*position];
                 *position += 1;
                 sample
             })
             .sum();
-        self.voices.retain(|position| *position < self.sample.len());
+        self.voices
+            .retain(|(sound, position)| *position < self.samples[*sound as usize].len());
         self.phase += 1.0;
         if self.phase >= self.samples_per_step {
             // Keep the fractional remainder to avoid drift at non-integral tempos.
@@ -131,38 +140,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clicks_follow_enabled_thirds_and_loop_over_silent_beats() {
-        for sound in [Sound::Clap, Sound::Snare] {
-            let pattern = Pattern {
-                bpm: 120.0,
-                beats: vec![[true, false, true], [false; 3]],
-                sound,
-            };
-            let source = BeatSource::new(&pattern);
-            let hit = source.sample.clone();
-            let samples: Vec<_> = source.take(96_000).collect();
-            let mut expected = vec![0.0; 96_000];
-            for start in [0, 16_000, 48_000, 64_000] {
-                for (index, sample) in hit.iter().enumerate() {
-                    expected[start + index] += sample;
-                }
+    fn mixed_sounds_follow_enabled_thirds_and_loop_over_silent_beats() {
+        let pattern = Pattern {
+            bpm: 120.0,
+            beats: vec![[Some(Sound::Clap), None, Some(Sound::Snare)], [None; 3]],
+            default_sound: Sound::Clap,
+        };
+        let source = BeatSource::new(&pattern);
+        let hits = source.samples.clone();
+        let samples: Vec<_> = source.take(96_000).collect();
+        let mut expected = vec![0.0; 96_000];
+        for (start, sound) in [(0, 0), (16_000, 1), (48_000, 0), (64_000, 1)] {
+            for (index, sample) in hits[sound].iter().enumerate() {
+                expected[start + index] += sample;
             }
-            assert!(samples.iter().any(|sample| sample.abs() > 0.01));
-            assert!(
-                samples
-                    .iter()
-                    .zip(expected)
-                    .all(|(actual, expected)| (actual - expected).abs() < 1e-6)
-            );
         }
+        assert_ne!(hits[0], hits[1]);
+        assert!(samples.iter().any(|sample| sample.abs() > 0.01));
+        assert!(
+            samples
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() < 1e-6)
+        );
     }
 
     #[test]
     fn fractional_tempo_does_not_accumulate_step_rounding_error() {
         let pattern = Pattern {
             bpm: 137.5,
-            beats: vec![[true; 3]],
-            sound: Sound::Clap,
+            beats: vec![[Some(Sound::Clap), Some(Sound::Snare), Some(Sound::Clap)]],
+            default_sound: Sound::Clap,
         };
         let mut source = BeatSource::new(&pattern);
         let frames = 480_000;
@@ -176,20 +184,18 @@ mod tests {
 
     #[test]
     fn fast_subdivisions_preserve_overlapping_sample_tails() {
-        for sound in [Sound::Clap, Sound::Snare] {
-            let pattern = Pattern {
-                bpm: 999.0,
-                beats: vec![[true, true, false]],
-                sound,
-            };
-            let source = BeatSource::new(&pattern);
-            let hit = source.sample.clone();
-            let samples: Vec<_> = source.take(48_000).collect();
-            for (frame, sample) in samples.iter().take(2_880).enumerate() {
-                let previous = frame.checked_sub(961).map(|i| hit[i]).unwrap_or(0.0);
-                assert!((sample - hit[frame] - previous).abs() < 1e-6);
-            }
-            assert!(samples.iter().all(|sample| sample.abs() <= 1.0));
+        let pattern = Pattern {
+            bpm: 999.0,
+            beats: vec![[Some(Sound::Clap), Some(Sound::Snare), None]],
+            default_sound: Sound::Clap,
+        };
+        let source = BeatSource::new(&pattern);
+        let hits = source.samples.clone();
+        let samples: Vec<_> = source.take(48_000).collect();
+        for (frame, sample) in samples.iter().take(2_880).enumerate() {
+            let snare = frame.checked_sub(961).map(|i| hits[1][i]).unwrap_or(0.0);
+            assert!((sample - hits[0][frame] - snare).abs() < 1e-6);
         }
+        assert!(samples.iter().all(|sample| sample.abs() <= 1.0));
     }
 }

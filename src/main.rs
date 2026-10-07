@@ -12,6 +12,8 @@ const PAD: Color32 = Color32::from_rgb(33, 40, 49);
 const BORDER: Color32 = Color32::from_rgb(49, 59, 71);
 const MUTED: Color32 = Color32::from_rgb(141, 155, 172);
 const ACCENT: Color32 = Color32::from_rgb(192, 239, 103);
+const CLAP: Color32 = Color32::from_rgb(239, 218, 103);
+const SNARE: Color32 = Color32::from_rgb(116, 222, 144);
 const PLAYHEAD: Color32 = Color32::from_rgb(255, 189, 105);
 const ROW_HEIGHT: f32 = 36.0;
 
@@ -394,12 +396,13 @@ impl TripleStep {
         });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("SOUND").size(11.0).color(MUTED));
-            let clap = ui.selectable_value(&mut self.pattern.sound, Sound::Clap, "TR-808 Clap");
-            let snare = ui.selectable_value(&mut self.pattern.sound, Sound::Snare, "TR-707 Snare");
-            if clap.changed() || snare.changed() {
-                self.restart();
-            }
+            ui.label(RichText::new("NEW HITS").size(11.0).color(MUTED));
+            ui.selectable_value(&mut self.pattern.default_sound, Sound::Clap, "TR-808 Clap");
+            ui.selectable_value(
+                &mut self.pattern.default_sound,
+                Sound::Snare,
+                "TR-707 Snare",
+            );
         });
         ui.add_space(16.0);
         ui.horizontal(|ui| {
@@ -452,31 +455,30 @@ impl TripleStep {
                                                 ),
                                         ),
                                     );
-                                    for (third, enabled) in beat.iter_mut().enumerate() {
+                                    for (third, sound) in beat.iter_mut().enumerate() {
                                         let active = current_step == Some(row * 3 + third);
+                                        let fill = match sound {
+                                            Some(Sound::Clap) => CLAP,
+                                            Some(Sound::Snare) => SNARE,
+                                            None => PAD,
+                                        };
                                         let button = egui::Button::new(
                                             RichText::new((third + 1).to_string())
                                                 .size(16.0)
                                                 .strong()
-                                                .color(if active || *enabled {
+                                                .color(if sound.is_some() {
                                                     BACKGROUND
                                                 } else {
                                                     MUTED
                                                 }),
                                         )
-                                        .fill(if active {
-                                            PLAYHEAD
-                                        } else if *enabled {
-                                            ACCENT
-                                        } else {
-                                            PAD
-                                        })
+                                        .fill(fill)
                                         .stroke(Stroke::new(
-                                            1.0,
+                                            if active { 3.0 } else { 1.0 },
                                             if active {
                                                 PLAYHEAD
-                                            } else if *enabled {
-                                                ACCENT
+                                            } else if sound.is_some() {
+                                                fill
                                             } else {
                                                 BORDER
                                             },
@@ -487,12 +489,23 @@ impl TripleStep {
                                             egui::WidgetInfo::selected(
                                                 egui::WidgetType::SelectableLabel,
                                                 true,
-                                                *enabled,
+                                                sound.is_some(),
                                                 format!("Beat {}, step {}", row + 1, third + 1),
                                             )
                                         });
-                                        if response.clicked() {
-                                            *enabled = !*enabled;
+                                        let response = response.on_hover_text(match sound {
+                                            Some(Sound::Clap) => "Clap. Click to turn off; right-click to switch to Snare.",
+                                            Some(Sound::Snare) => "Snare. Click to turn off; right-click to switch to Clap.",
+                                            None => "Click to enable; right-click to enable the alternative sound.",
+                                        });
+                                        if response.secondary_clicked() {
+                                            *sound = Some(match sound.unwrap_or(self.pattern.default_sound) {
+                                                Sound::Clap => Sound::Snare,
+                                                Sound::Snare => Sound::Clap,
+                                            });
+                                            changed = true;
+                                        } else if response.clicked() {
+                                            *sound = if sound.is_some() { None } else { Some(self.pattern.default_sound) };
                                             changed = true;
                                         }
                                     }
@@ -525,7 +538,7 @@ impl TripleStep {
                     });
             });
         if let Some(row) = insert {
-            self.pattern.beats.insert(row, [false; 3]);
+            self.pattern.beats.insert(row, [None; 3]);
             changed = true;
         }
         if let Some(row) = remove {
@@ -567,7 +580,7 @@ impl TripleStep {
         });
         ui.add_space(4.0);
         ui.label(
-            RichText::new("Three equal steps per beat. Edits restart the loop.")
+            RichText::new("Right-click / two-finger tap switches sound. Edits restart the loop.")
                 .size(11.0)
                 .color(MUTED),
         );
@@ -614,16 +627,16 @@ mod tests {
         assert_eq!(harness.state().pattern, Pattern::default());
         harness.get_by_label("TR-707 Snare").click();
         harness.run();
-        assert_eq!(harness.state().pattern.sound, Sound::Snare);
+        assert_eq!(harness.state().pattern.default_sound, Sound::Snare);
         harness.get_by_label("Beat 1, step 2").click();
         harness.run();
         assert_eq!(
             harness.state().pattern.beats,
             vec![
-                [true, true, false],
-                [true, false, false],
-                [true, false, false],
-                [true, false, false]
+                [Some(Sound::Clap), Some(Sound::Snare), None],
+                [Some(Sound::Clap), None, None],
+                [Some(Sound::Clap), None, None],
+                [Some(Sound::Clap), None, None]
             ]
         );
         harness.get_all_by_label("+").next().unwrap().click();
@@ -631,11 +644,11 @@ mod tests {
         assert_eq!(
             harness.state().pattern.beats,
             vec![
-                [true, true, false],
-                [false; 3],
-                [true, false, false],
-                [true, false, false],
-                [true, false, false]
+                [Some(Sound::Clap), Some(Sound::Snare), None],
+                [None; 3],
+                [Some(Sound::Clap), None, None],
+                [Some(Sound::Clap), None, None],
+                [Some(Sound::Clap), None, None]
             ]
         );
         harness.get_by_label("Beat 2, step 3").click();
@@ -645,10 +658,10 @@ mod tests {
         assert_eq!(
             harness.state().pattern.beats,
             vec![
-                [false, false, true],
-                [true, false, false],
-                [true, false, false],
-                [true, false, false]
+                [None, None, Some(Sound::Snare)],
+                [Some(Sound::Clap), None, None],
+                [Some(Sound::Clap), None, None],
+                [Some(Sound::Clap), None, None]
             ]
         );
         while harness.state().pattern.beats.len() > 1 {
@@ -661,6 +674,28 @@ mod tests {
         harness.get_by_label("Reset").click();
         harness.run();
         assert_eq!(harness.state().pattern, Pattern::default());
+    }
+
+    #[test]
+    fn secondary_click_switches_sounds_and_enables_empty_pads() {
+        let mut harness = harness();
+        for expected in [Sound::Snare, Sound::Clap] {
+            harness.get_by_label("Beat 1, step 1").click_secondary();
+            harness.run();
+            assert_eq!(harness.state().pattern.beats[0][0], Some(expected));
+        }
+        harness.get_by_label("Beat 1, step 2").click_secondary();
+        harness.run();
+        assert_eq!(harness.state().pattern.beats[0][1], Some(Sound::Snare));
+        harness.get_by_label("Beat 1, step 2").click();
+        harness.run();
+        assert_eq!(harness.state().pattern.beats[0][1], None);
+        harness.get_by_label("TR-707 Snare").click();
+        harness.run();
+        harness.get_by_label("Beat 1, step 2").click_secondary();
+        harness.run();
+        assert_eq!(harness.state().pattern.beats[0][1], Some(Sound::Clap));
+        assert_eq!(harness.state().pattern.beats[1][0], Some(Sound::Clap));
     }
 
     #[test]
@@ -687,6 +722,8 @@ mod tests {
         harness.get_by_label("Beat 1, step 3").click();
         harness.run();
         harness.get_all_by_label("+").last().unwrap().click();
+        harness.run();
+        harness.get_by_label("Beat 2, step 1").click_secondary();
         harness.run();
         let snare = harness.state().pattern.clone();
         type_beat_name(&mut harness, "Snare");
@@ -813,10 +850,16 @@ mod tests {
         }
         harness.get_by_label("Beat 8, step 3").click();
         harness.run();
-        assert_eq!(harness.state().pattern.beats[7], [false, false, true]);
+        assert_eq!(
+            harness.state().pattern.beats[7],
+            [None, None, Some(Sound::Clap)]
+        );
         harness.get_by_label("Beat 1, step 3").click();
         harness.run();
-        assert_eq!(harness.state().pattern.beats[0], [true, false, true]);
+        assert_eq!(
+            harness.state().pattern.beats[0],
+            [Some(Sound::Clap), None, Some(Sound::Clap)]
+        );
     }
 
     #[test]
